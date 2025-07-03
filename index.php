@@ -2,19 +2,41 @@
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 session_start();
+require 'db.php';
+require 'header.php';
 if (!isset($_SESSION['user_id'])) {
 
     header("Location: login.php");
     exit;
 }
-require 'db.php';
+
 
 // Fetch data
-$clients = $pdo->query("SELECT id, fullname FROM clients ORDER BY fullname")->fetchAll();
-$appointments = $pdo->query("SELECT a.*, c.fullname FROM appointments a JOIN clients c ON a.client_id = c.id")->fetchAll();
-$services = $pdo->query("SELECT id, description, duration, price FROM pricelist ORDER BY description")->fetchAll();
-$employees = $pdo->query("SELECT id, firstname FROM employees WHERE status = 'enabled' ORDER BY id")->fetchAll();
+$company_id = $_SESSION['company_id'] ?? 0;
 
+// Fetch clients belonging to this company only
+$clients = $pdo->prepare("SELECT id, fullname FROM clients WHERE company_id = ? ORDER BY fullname");
+$clients->execute([$company_id]);
+$clients = $clients->fetchAll();
+
+// Fetch pricelist belonging to this company only
+$pricelist = $pdo->prepare("SELECT id, description, duration, price FROM pricelist WHERE company_id = ? ORDER BY description");
+$pricelist->execute([$company_id]);
+$services = $pricelist->fetchAll();
+
+// Fetch employees belonging to this company only
+$employees_stmt = $pdo->prepare("SELECT id, firstname FROM employees WHERE status = 'enabled' AND company_id = ? ORDER BY id");
+$employees_stmt->execute([$company_id]);
+$employees = $employees_stmt->fetchAll();
+
+// Fetch appointments belonging to this company only
+$appointments_stmt = $pdo->prepare("SELECT a.*, c.fullname, p.description AS service_description 
+    FROM appointments a 
+    JOIN clients c ON a.client_id = c.id 
+    JOIN pricelist p ON a.service_id = p.id
+    WHERE a.company_id = ?");
+$appointments_stmt->execute([$_SESSION['company_id']]);
+$appointments = $appointments_stmt->fetchAll(PDO::FETCH_ASSOC);
 
 
 
@@ -41,13 +63,14 @@ foreach ($appointments as $a) {
     }
 }
 $totalDurationHours = round($totalDurationSeconds / 3600, 2);
+
 ?>
 
 <!DOCTYPE html>
 <html lang="el">
 <head>
     <meta charset="UTF-8">
-    <title>Ποδοαρμονία - Άννα Σπάθα</title>
+    
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js"></script>
 <!-- Replace old FullCalendar includes with this Scheduler bundle -->
@@ -89,13 +112,7 @@ $totalDurationHours = round($totalDurationSeconds / 3600, 2);
 <div class="container">
 
     <!-- Header -->
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <div class="d-flex align-items-center">
-            <img src="images/logo.png" alt="Logo" class="logo-img me-3">
-            <h3 class="m-0">Ποδοαρμονία - Άννα Σπάθα</h3>
-        </div>
-        <a href="logout.php" class="btn btn-outline-danger">Αποσύνδεση</a>
-    </div>
+    
 
     <!-- Tabs -->
     <ul class="nav nav-tabs mb-4" id="mainTabs" role="tablist">
@@ -103,7 +120,7 @@ $totalDurationHours = round($totalDurationSeconds / 3600, 2);
             <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#appointments">Ραντεβού</button>
         </li>
         <li class="nav-item">
-            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#clients">Ασθενείς</button>
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#clients">Πελατολόγιο</button>
         </li>
         <li class="nav-item">
             <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tools">Εργαλεία</button>
@@ -117,7 +134,7 @@ $totalDurationHours = round($totalDurationSeconds / 3600, 2);
             <!-- Stats -->
             <div class="row mb-4">
                 <div class="col-md-3"><div class="card text-center"><div class="card-body"><h5>Σύνολο Ραντεβού</h5><p class="display-6"><?= $totalAppointments ?></p></div></div></div>
-                <div class="col-md-3"><div class="card text-center"><div class="card-body"><h5>Ασθενείς</h5><p class="display-6"><?= $totalClients ?></p></div></div></div>
+                <div class="col-md-3"><div class="card text-center"><div class="card-body"><h5>Πελάτες</h5><p class="display-6"><?= $totalClients ?></p></div></div></div>
                 <div class="col-md-3"><div class="card text-center"><div class="card-body"><h5>Ραντεβού Σήμερα</h5><p class="display-6"><?= count($appointmentsToday) ?></p></div></div></div>
                 <div class="col-md-3"><div class="card text-center"><div class="card-body"><h5>Συνολικές Ώρες Μηνός</h5><p class="display-6"><?= $totalDurationHours ?></p></div></div></div>
             </div>
@@ -128,49 +145,14 @@ $totalDurationHours = round($totalDurationSeconds / 3600, 2);
                 <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#appointmentModal" onclick="clearAppointmentForm()">+ Νέο Ραντεβού (ανοιχτό) </button>
             </div>
             <div id="calendar"></div>
-    <!-- Appointment Table -->
-<div class="mt-4">
-    <h5>Λίστα Ραντεβού</h5>
-    <div class="table-responsive">
-        <table class="table table-striped table-hover table-sm align-middle">
-            <thead class="table-light">
-                <tr>
-                    <th>Ημερομηνία</th>
-                    <th>Ασθενής</th>
-                    <th>Υπηρεσία</th>
-                    <th>Υπάλληλος</th>
-                    <th>Διάρκεια</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach ($appointments as $a): 
-                    $start = new DateTime($a['start']);
-                    $end = $a['end'] ? new DateTime($a['end']) : null;
-                    $duration = $end ? $start->diff($end)->format('%H:%I') : '—';
-                    $service = array_filter($services, fn($s) => $s['id'] == $a['service_id']);
-                    $serviceName = $service ? reset($service)['description'] : '';
-                    $employee = array_filter($employees, fn($e) => $e['id'] == $a['employee_id']);
-                    $employeeName = $employee ? reset($employee)['firstname'] : '';
-                ?>
-                    <tr>
-                        <td><?= $start->format('d/m/Y H:i') ?></td>
-                        <td><?= htmlspecialchars($a['fullname']) ?></td>
-                        <td><?= htmlspecialchars($serviceName) ?></td>
-                        <td><?= htmlspecialchars($employeeName) ?></td>
-                        <td><?= $duration ?></td>
-                    </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
-    </div>
-</div>
+    
 
         </div>
 
         <!-- Clients Tab -->
         <div class="tab-pane fade" id="clients">
             <div class="d-flex justify-content-between mb-3">
-                <h4>Λίστα Ασθενών</h4>
+                <h4>Λίστα Πελατών</h4>
                 <a href="add_client.php" class="btn btn-success">+ Προσθήκη</a>
             </div>
             <ul class="list-group">
@@ -194,13 +176,13 @@ $totalDurationHours = round($totalDurationSeconds / 3600, 2);
     				<a href="employees.php" class="text-decoration-none">👤 Διαχείριση Υπαλλήλων</a>
 				</li>
                 <li class="list-group-item">
-             		<a href="add_edit_pricelist.php" class="text-decoration-none">📝 Διαχείριση Τιμοκαταλόγου</a>
+             		<a href="add_edit_pricelist.php" class="text-decoration-none">🏷️Τιμοκατάλογος</a>
         		</li>
                                 <li class="list-group-item">
-             		<a href="add_edit_pricelist.php" class="text-decoration-none">📝 Διαχείριση Τιμοκαταλόγου</a>
+             		<a href="" class="text-decoration-none">💶 Ταμείο</a>
         		</li>
                                 <li class="list-group-item">
-             		<a href="add_edit_pricelist.php" class="text-decoration-none">📝 Διαχείριση Τιμοκαταλόγου</a>
+             		<a href="" class="text-decoration-none">📊 Στατιστικά</a>
         		</li>
         <!-- You can add more tools below if needed -->
     </ul>
@@ -406,7 +388,7 @@ document.addEventListener('DOMContentLoaded', function () {
         events: <?= json_encode(array_map(function($a) {
             return [
                 'id' => $a['id'],
-                'title' => $a['fullname'],
+                'title' => $a['fullname'] . ' - ' . $a['service_description'],
                 'start' => $a['start'],
                 'end' => $a['end'] ?: null,
                 'resourceId' => $a['employee_id'],
@@ -414,7 +396,8 @@ document.addEventListener('DOMContentLoaded', function () {
                     'client_id' => $a['client_id'],
                     'notes' => $a['notes'],
                     'service_id' => $a['service_id'],
-                    'employee_id' => $a['employee_id']
+                    'employee_id' => $a['employee_id'],
+                	'service_description' => $a['service_description'] 
                 ]
             ];
         }, $appointments), JSON_UNESCAPED_UNICODE) ?>,
