@@ -10,10 +10,32 @@ if (!isset($_SESSION['user_id'])) {
 require 'db.php';
 
 // Fetch data
-$clients = $pdo->query("SELECT id, fullname FROM clients ORDER BY fullname")->fetchAll();
-$appointments = $pdo->query("SELECT a.*, c.fullname FROM appointments a JOIN clients c ON a.client_id = c.id")->fetchAll();
-$services = $pdo->query("SELECT id, description, duration, price FROM pricelist ORDER BY description")->fetchAll();
-$employees = $pdo->query("SELECT id, firstname FROM employees WHERE status = 'enabled' ORDER BY id")->fetchAll();
+$company_id = (int)($_SESSION['company_id'] ?? 0);
+
+// Clients of the company
+$clientsStmt = $pdo->prepare("SELECT id, fullname FROM clients WHERE company_id = ? ORDER BY fullname");
+$clientsStmt->execute([$company_id]);
+$clients = $clientsStmt->fetchAll();
+
+// Appointments linked to clients of the company
+$appointmentsStmt = $pdo->prepare("
+    SELECT a.*, c.fullname 
+    FROM appointments a 
+    JOIN clients c ON a.client_id = c.id 
+    WHERE c.company_id = ?"
+);
+$appointmentsStmt->execute([$company_id]);
+$appointments = $appointmentsStmt->fetchAll();
+
+// Services filtered by company_id
+$servicesStmt = $pdo->prepare("SELECT id, description, duration, price FROM pricelist WHERE company_id = ? ORDER BY description");
+$servicesStmt->execute([$company_id]);
+$services = $servicesStmt->fetchAll();
+
+// Employees of the company with enabled status
+$employeesStmt = $pdo->prepare("SELECT id, firstname FROM employees WHERE status = 'enabled' AND company_id = ? ORDER BY id");
+$employeesStmt->execute([$company_id]);
+$employees = $employeesStmt->fetchAll();
 
 
 
